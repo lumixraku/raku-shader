@@ -45,10 +45,36 @@ grazing angles (far). Two stages:
 
 Water detection in composite uses `depthtex0` (with translucents) vs
 `depthtex1` (without): water = surface sits in front of opaque geometry behind
-it. No aux buffer / color heuristic needed. Surface treated as a flat mirror
-(normal = world up).
+it. No aux buffer / color heuristic needed.
+
+**Waves**: both stages tilt their mirror normal with the same animated wave
+field — three octaves of 2D value noise, each octave drifting in a different
+direction (a sum of directional sines was tried first and interferes into a
+plaid/lattice pattern), gradient by central differences, world-anchored and
+driven by `frameTimeCounter`. Only the NORMAL is perturbed, so the Fresnel
+near-transparent / far-mirror behavior is intact; the sky reflection, sun
+glint, alpha and SSR rays all wobble together. The tilt fades exponentially
+with distance (`WAVE_FADE_DIST`) so far water stays a clean, shimmer-free
+mirror. In gbuffers only up-facing surfaces wave (waterfall sides keep their
+vertex normal); in SSR a ray tilted below the horizontal falls back to the
+flat mirror so it can't march into the lakebed. The `waveGradient` function
+is copy-pasted between `gbuffers_water.fsh` and `composite2.fsh` — keep in
+sync (no #include).
+
+**Underwater view** (`isEyeInWater == 1` branch in `gbuffers_water.fsh`):
+looking up at the surface uses the same wave normal flipped toward the
+viewer, with the physically-correct water→air Fresnel — beyond the ~48.6°
+critical angle the surface is a total-internal-reflection mirror (dim deep
+tint, near-opaque), straight up is the bright Snell window (clearer alpha so
+the above-water world shows through). A sun sparkle comes from refracting
+the view ray out of the water and dotting it against the sun; waves wobble
+that alignment per pixel, giving the glittering (波光粼粼) look. `refract()`
+returning vec3(0) under TIR kills the sparkle outside the window on its own.
 
 ### Tuning knobs
+- Wave look: `WAVE_STRENGTH` (tilt), `WAVE_SPEED`, `WAVE_FADE_DIST` in BOTH
+  `gbuffers_water.fsh` and `composite2.fsh`; the three octave lines in
+  `waveHeight` set scale/drift-direction/amplitude per octave.
 - Transparency range: `mix(0.55, 0.93, fres)` alpha in `gbuffers_water.fsh`.
 - SSR reach/precision: `SSR_STEPS` / `SSR_STEP0` / `SSR_GROW` in `composite2.fsh`.
 - Hit tolerance: `SSR_THICKNESS` floor + the `lastStep * 1.6` scaling.
@@ -59,7 +85,9 @@ it. No aux buffer / color heuristic needed. Surface treated as a flat mirror
   don't appear; reflections fade near screen edges). Inherent to SSR.
 - Deep water with no visible bottom (lakebed beyond render distance) is not
   detected as water (the `d1 < 1.0` clouds-exclusion test also drops it).
-- Flat mirror only — no ripple distortion yet.
+- Waves perturb normals only — the surface geometry stays flat, so the
+  silhouette at the shoreline doesn't bob. Refraction (the underwater scene
+  seen through the surface) is also not distorted yet.
 
 ## SSAO (composite + composite1)
 

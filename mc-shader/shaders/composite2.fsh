@@ -4,7 +4,8 @@
    Water is detected without any aux buffer: depthtex0 includes the
    translucent water surface, depthtex1 excludes it, so wherever the water
    surface sits in front of the opaque lakebed the two depths differ. The
-   surface is treated as a flat horizontal mirror (normal = world up), and we
+   surface is a horizontal mirror whose normal is tilted by the same animated
+   wave field as gbuffers_water (keep the two in sync), and we
    ray-march its reflection through the scene depth, blending the reflected
    scene color (trees, terrain, entities) over the base by Fresnel. On a miss
    we keep the base color, which already reflects the sky. */
@@ -18,6 +19,9 @@ uniform sampler2D depthtex1; // depth WITHOUT translucents (lakebed)
 uniform mat4 gbufferProjection;
 uniform mat4 gbufferProjectionInverse;
 uniform mat4 gbufferModelView;
+uniform mat4 gbufferModelViewInverse;
+uniform vec3 cameraPosition;
+uniform float frameTimeCounter;
 uniform int isEyeInWater;
 
 // Debug: 1 = paint detected water magenta, 0 = normal SSR.
@@ -31,6 +35,43 @@ uniform int isEyeInWater;
 #define SSR_GROW 1.07
 #define SSR_THICKNESS 0.50
 #define WATER_EPS 0.05      // view-space surface/lakebed gap that means "water"
+
+#define WAVE_STRENGTH 0.60   // normal tilt; 0 = calm flat mirror
+#define WAVE_SPEED 0.8
+#define WAVE_FADE_DIST 40.0  // waves flatten with distance (anti-shimmer)
+
+// Animated wave height-field — COPY of gbuffers_water.fsh (OptiFine has no
+// #include; keep the two in sync). Drifting noise octaves, not directional
+// sines: sine sums interfere into a plaid/lattice pattern.
+float whash2(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+float wnoise2(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = whash2(i);
+    float b = whash2(i + vec2(1.0, 0.0));
+    float c = whash2(i + vec2(0.0, 1.0));
+    float d = whash2(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+float waveHeight(vec2 p, float t) {
+    float h = 0.0;
+    h += wnoise2(p * 0.22 + vec2( t * 0.50,  t * 0.28)) * 0.55;
+    h += wnoise2(p * 0.55 + vec2(-t * 0.35,  t * 0.60)) * 0.30;
+    h += wnoise2(p * 1.30 + vec2( t * 0.90, -t * 0.70)) * 0.15;
+    return h;
+}
+
+vec2 waveGradient(vec2 p, float t) {
+    const float e = 0.35;
+    return vec2(waveHeight(p + vec2(e, 0.0), t) - waveHeight(p - vec2(e, 0.0), t),
+                waveHeight(p + vec2(0.0, e), t) - waveHeight(p - vec2(0.0, e), t))
+           / (2.0 * e);
+}
 
 vec3 viewFromDepth(vec2 uv, float depth) {
     vec4 ndc = vec4(uv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
@@ -72,11 +113,22 @@ void main() {
         return;
     }
 
-    // Flat mirror: world up transformed into eye space.
-    vec3 N = normalize(mat3(gbufferModelView) * vec3(0.0, 1.0, 0.0));
     vec3 viewPos = viewFromDepth(texcoord, depth);  // water surface point
     vec3 V = normalize(-viewPos);                   // surface -> eye
+
+    // Waved mirror: world up tilted by the animated wave gradient at this
+    // surface point, fading with distance like gbuffers_water.
+    vec3 wpos = (gbufferModelViewInverse * vec4(viewPos, 1.0)).xyz + cameraPosition;
+    float fade = exp(-length(viewPos) / WAVE_FADE_DIST);
+    vec2 g = waveGradient(wpos.xz, frameTimeCounter * WAVE_SPEED) * (WAVE_STRENGTH * fade);
+    vec3 N = normalize(mat3(gbufferModelView) * normalize(vec3(-g.x, 1.0, -g.y)));
     vec3 rayDir = normalize(reflect(-V, N));        // reflected view ray
+    // A wave tilt can send a grazing ray below the horizontal, marching down
+    // into the lakebed; fall back to the flat mirror there.
+    if ((mat3(gbufferModelViewInverse) * rayDir).y < 0.0) {
+        N = normalize(mat3(gbufferModelView) * vec3(0.0, 1.0, 0.0));
+        rayDir = normalize(reflect(-V, N));
+    }
 
     float cosNV = clamp(dot(N, V), 0.0, 1.0);
     float fres = 0.02 + 0.98 * pow(1.0 - cosNV, 5.0);
