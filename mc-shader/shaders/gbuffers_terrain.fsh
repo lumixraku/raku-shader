@@ -35,10 +35,22 @@ vec3 applyLighting(vec3 base, vec3 normal, float envL) {
     float wrap = mix(0.05, 0.35, day); // more wrap at midday
     float ndl = max((dot(N, L) + wrap) / (1.0 + wrap), 0.0);
 
-    // Stronger ambient outdoors so backfaces aren't too dark
-    float ambient = mix(0.10, mix(0.16, 0.55, day), envL); // caves ~0.10, night ~0.16, midday ~0.55
+    float duskF = clamp(1.0 - abs(sunUp) / 0.30, 0.0, 1.0);
+
+    // Direct light tint: white at noon, amber at dusk, cool moonlight.
+    vec3 dirTint = (sunUp >= 0.0)
+        ? mix(vec3(1.00, 0.98, 0.94), vec3(1.00, 0.62, 0.32), duskF)
+        : vec3(0.65, 0.72, 1.00);
+    // Ambient is SKY light, so shaded faces take the sky's tint: pale blue
+    // at midday (clean instead of muddy), mauve at dusk, deep blue at night.
+    vec3 ambTint = mix(mix(vec3(0.66, 0.74, 1.00), vec3(0.90, 0.95, 1.05), day),
+                       vec3(1.00, 0.76, 0.78), duskF * 0.6);
+
+    // Higher ambient + gentler diffuse: at noon a block's side face stays
+    // within ~2/3 of its top face, so shadows read bright and clean.
+    float ambient = mix(0.10, mix(0.16, 0.62, day), envL); // caves ~0.10, night ~0.16, midday ~0.62
     float diffuseScale = day * 1.0 + moon * 0.06; // moon much weaker
-    float lit = ambient + ndl * 0.7 * diffuseScale;
+    vec3 lit = ambTint * ambient + dirTint * (ndl * 0.5 * diffuseScale);
     return clamp(base * lit, 0.0, 1.0);
 }
 

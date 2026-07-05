@@ -193,7 +193,41 @@ cutout / basic):
    darker nights, glowstone/lanterns/torches now read as actual light
    sources.
 
+## Golden-afternoon color grade (final)
+
+`final.fsh` went from a passthrough to a daytime color grade: golden white
+balance (`vec3(1.05, 1.01, 0.94)`), +10% exposure, a gentle smoothstep
+S-curve for contrast, and a saturation boost. Everything is scaled by
+`smoothstep(0.15, 0.40, day)`, so the grade fades out toward dusk (whose
+palette is already warm) and is absent at night.
+
 ### Tuning knobs
+- `GRADE_WARMTH` / `GRADE_EXPOSURE` / `GRADE_CONTRAST` / `GRADE_SATURATION`
+  in `final.fsh`; the white-balance vec3 itself for the hue of the warmth.
+- The `smoothstep(0.15, 0.40, day)` ramp for when the grade kicks in.
+
+## Tinted, time-of-day shadows (gbuffers_* lighting)
+
+The `lit` factor went from a gray scalar to a vec3 with two tinted light
+sources, fixing the "dirty" noon look (side faces were a flat gray ~55% of
+the top face):
+
+- **Ambient = sky light**, so shaded faces take the sky's tint: pale blue at
+  midday (clean instead of muddy), mauve at dusk (`duskF`-driven), deep blue
+  at night / under moonlight.
+- **Direct light tint**: warm white sun at noon → amber at dusk; cool blue
+  moon at night.
+- Contrast rebalanced for noon: ambient raised (0.55→0.62 terrain-class) and
+  diffuse lowered (0.7→0.5), so a block's side face sits at ~2/3 of its top
+  face instead of ~1/2, and tops clip less.
+
+Applied to all 7 gbuffers lighting variants (same copy-paste caveat).
+
+### Tuning knobs
+- Shadow tint: `ambTint` (day / night / dusk vec3s).
+- Sun/moon color: `dirTint`.
+- Noon contrast: the day ambient constants (0.62/0.59/0.38/0.41 per variant)
+  vs the diffuse factor (0.5 / 0.47).
 - Night surface brightness: the night constants (0.16 / 0.15 / 0.11 / 0.10
   per variant) in each `ambient` line.
 - Glow radius/steepness: the `pow(torch, 1.5)` exponent (lower = wider glow).

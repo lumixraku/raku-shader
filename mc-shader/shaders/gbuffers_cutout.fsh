@@ -27,8 +27,14 @@ vec3 shade(vec3 c, vec3 n, float envL){
     float moon = clamp(-sunUp, 0.0, 1.0);
     vec3 L = (sunUp >= 0.0) ? sunDir : -sunDir;
     float ndl = max(dot(N, L), 0.0);
-    float ambient = mix(0.04, mix(0.10, 0.32, day), envL);
-    float lit = ambient + ndl * 0.7 * (day*1.0 + moon*0.06);
+    float duskF = clamp(1.0 - abs(sunUp) / 0.30, 0.0, 1.0);
+    vec3 dirTint = (sunUp >= 0.0)
+        ? mix(vec3(1.00, 0.98, 0.94), vec3(1.00, 0.62, 0.32), duskF)
+        : vec3(0.65, 0.72, 1.00);
+    vec3 ambTint = mix(mix(vec3(0.66, 0.74, 1.00), vec3(0.90, 0.95, 1.05), day),
+                       vec3(1.00, 0.76, 0.78), duskF * 0.6);
+    float ambient = mix(0.04, mix(0.10, 0.38, day), envL);
+    vec3 lit = ambTint * ambient + dirTint * (ndl * 0.5 * (day*1.0 + moon*0.06));
     return clamp(c * lit, 0.0, 1.0);
 }
 

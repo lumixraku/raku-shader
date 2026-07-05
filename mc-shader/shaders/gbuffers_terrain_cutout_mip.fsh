@@ -28,8 +28,14 @@ vec3 shade(vec3 c, vec3 n, float envL){
     vec3 L = (sunUp >= 0.0) ? sunDir : -sunDir;
     float wrap = mix(0.05, 0.35, day);
     float ndl = max((dot(N,L)+wrap)/(1.0+wrap), 0.0);
-    float ambient = mix(0.08, mix(0.15, 0.52, day), envL);
-    float lit = ambient + ndl * 0.65 * (day*1.0 + moon*0.06);
+    float duskF = clamp(1.0 - abs(sunUp) / 0.30, 0.0, 1.0);
+    vec3 dirTint = (sunUp >= 0.0)
+        ? mix(vec3(1.00, 0.98, 0.94), vec3(1.00, 0.62, 0.32), duskF)
+        : vec3(0.65, 0.72, 1.00);
+    vec3 ambTint = mix(mix(vec3(0.66, 0.74, 1.00), vec3(0.90, 0.95, 1.05), day),
+                       vec3(1.00, 0.76, 0.78), duskF * 0.6);
+    float ambient = mix(0.08, mix(0.15, 0.59, day), envL);
+    vec3 lit = ambTint * ambient + dirTint * (ndl * 0.47 * (day*1.0 + moon*0.06));
     return clamp(c * lit, 0.0, 1.0);
 }
 
