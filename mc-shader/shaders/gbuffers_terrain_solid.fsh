@@ -28,7 +28,7 @@ vec3 shade(vec3 c, vec3 n, float envL){
     vec3 L = (sunUp >= 0.0) ? sunDir : -sunDir;
     float wrap = mix(0.05, 0.35, day);
     float ndl = max((dot(N,L)+wrap)/(1.0+wrap), 0.0);
-    float ambient = mix(0.10, 0.55, envL);
+    float ambient = mix(0.10, mix(0.16, 0.55, day), envL);
     float lit = ambient + ndl * 0.7 * (day*1.0 + moon*0.06);
     return clamp(c * lit, 0.0, 1.0);
 }
@@ -39,7 +39,7 @@ void main() {
     albedo.rgb = shade(albedo.rgb, vNormal, envLightFactor(lmcoord));
 
     float torch = clamp(lmcoord.s, 0.0, 1.0);
-    float torchBoost = pow(torch, 0.35);
+    float torchBoost = pow(torch, 1.5);
     const float TORCH_STRENGTH = 1.10;
     vec3 warmTint = vec3(1.00, 0.90, 0.75);
     vec3 warmBase = clamp(baseColor * warmTint, 0.0, 1.0);

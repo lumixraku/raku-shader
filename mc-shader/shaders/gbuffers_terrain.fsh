@@ -36,7 +36,7 @@ vec3 applyLighting(vec3 base, vec3 normal, float envL) {
     float ndl = max((dot(N, L) + wrap) / (1.0 + wrap), 0.0);
 
     // Stronger ambient outdoors so backfaces aren't too dark
-    float ambient = mix(0.10, 0.55, envL);     // caves ~0.10, outdoors ~0.55
+    float ambient = mix(0.10, mix(0.16, 0.55, day), envL); // caves ~0.10, night ~0.16, midday ~0.55
     float diffuseScale = day * 1.0 + moon * 0.06; // moon much weaker
     float lit = ambient + ndl * 0.7 * diffuseScale;
     return clamp(base * lit, 0.0, 1.0);
@@ -56,8 +56,9 @@ void main() {
     // Extra boost from block light (torches, glowstone, etc.) so nearby
     // blocks are noticeably lit even when the sun/moon is weak.
     float torch = clamp(lmcoord.s, 0.0, 1.0);
-    // Make falloff very slow: mid/low block light stays bright.
-    float torchBoost = pow(torch, 0.35); // exponent <1 flattens decay
+    // Steep falloff: a bright pool at the emitter fading with distance, so
+    // block light reads as a visible glow now that nights are dark.
+    float torchBoost = pow(torch, 1.5);
     const float TORCH_STRENGTH = 1.10;
     // Warm daylight color for block light (avoid cold/blue tint)
     vec3 warmTint = vec3(1.00, 0.90, 0.75);

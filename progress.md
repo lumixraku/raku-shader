@@ -148,3 +148,29 @@ otherwise washes out their shading at cloud distances.
   un-rounded clouds.
 - Noise is world-anchored while clouds drift, so the fur pattern slowly swims
   along a cloud edge. Subtle; looks alive rather than wrong.
+
+## Night darkness & block-light glow (gbuffers_* lighting)
+
+Two linked fixes across the 7 gbuffers variants that duplicate the lighting
+code (terrain / terrain_solid / terrain_cutout / terrain_cutout_mip / solid /
+cutout / basic):
+
+1. Outdoor ambient now follows sun elevation: `mix(caveMin, mix(night, day
+   Max, day), envL)` — night surface sits at ~0.16 instead of inheriting the
+   full daytime 0.55 (the old formula only looked at the sky lightmap, which
+   stays maxed outdoors at midnight).
+2. Block-light boost curve steepened from `pow(torch, 0.35)` (nearly flat —
+   ~0.86 strength at half distance, no visible falloff) to `pow(torch, 1.5)`,
+   giving a bright pool at the emitter that fades with distance. Against the
+   darker nights, glowstone/lanterns/torches now read as actual light
+   sources.
+
+### Tuning knobs
+- Night surface brightness: the night constants (0.16 / 0.15 / 0.11 / 0.10
+  per variant) in each `ambient` line.
+- Glow radius/steepness: the `pow(torch, 1.5)` exponent (lower = wider glow).
+- Glow intensity: `TORCH_STRENGTH` (1.10).
+
+### Known limits
+- The lighting function is still copy-pasted across the 7 gbuffers files —
+  any tweak must be applied to all of them (no #include under OptiFine).

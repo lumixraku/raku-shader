@@ -27,7 +27,7 @@ vec3 shade(vec3 c, vec3 n, float envL){
     float moon = clamp(-sunUp, 0.0, 1.0);
     vec3 L = (sunUp >= 0.0) ? sunDir : -sunDir;
     float ndl = max(dot(N, L), 0.0);
-    float ambient = mix(0.04, 0.32, envL);
+    float ambient = mix(0.04, mix(0.10, 0.32, day), envL);
     float lit = ambient + ndl * 0.7 * (day*1.0 + moon*0.06);
     return clamp(c * lit, 0.0, 1.0);
 }
@@ -40,7 +40,7 @@ void main() {
     albedo.a = 1.0; // make surviving fragments fully opaque
     
     float torch = clamp(lmcoord.s, 0.0, 1.0);
-    float torchBoost = pow(torch, 0.35);
+    float torchBoost = pow(torch, 1.5);
     const float TORCH_STRENGTH = 1.10;
     vec3 warmTint = vec3(1.00, 0.90, 0.75);
     vec3 warmBase = clamp(baseColor * warmTint, 0.0, 1.0);
