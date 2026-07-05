@@ -1,36 +1,28 @@
 #version 120
 
-/* Screen-space reflections for water.
-   Water is detected without any aux buffer: depthtex0 includes the
-   translucent water surface, depthtex1 excludes it, so wherever the water
-   surface sits in front of the opaque lakebed the two depths differ. The
-   surface is treated as a flat horizontal mirror (normal = world up), and we
-   ray-march its reflection through the scene depth, blending the reflected
-   scene color (trees, terrain, entities) over the base by Fresnel. On a miss
-   we keep the base color, which already reflects the sky. */
+/* SSAO — raw ambient-occlusion estimate, written to colortex3.
+   This pack has no normal G-buffer, so the view-space normal is reconstructed
+   from depthtex0 by comparing neighbor pixels (picking the smaller depth delta
+   on each axis so normals stay clean at object silhouettes). Samples are a
+   golden-angle spiral in the tangent plane, lifted along the normal into a
+   hemisphere, rotated per pixel by interleaved gradient noise (no noise
+   texture needed). The result here is NOISY by design — composite1 does a
+   depth-aware blur before multiplying it into the scene color.
+   Every pixel is written every frame, so no reliance on buffer clear values
+   (Iris does not clear colortex reliably — see knowledge.md). */
 
 varying vec2 texcoord;
 
-uniform sampler2D colortex0; // scene color (incl. sky-reflected water)
-uniform sampler2D depthtex0; // depth WITH translucents (water surface)
-uniform sampler2D depthtex1; // depth WITHOUT translucents (lakebed)
-
+uniform sampler2D depthtex0;
 uniform mat4 gbufferProjection;
 uniform mat4 gbufferProjectionInverse;
-uniform mat4 gbufferModelView;
-uniform int isEyeInWater;
+uniform float viewWidth;
+uniform float viewHeight;
 
-// Debug: 1 = paint detected water magenta, 0 = normal SSR.
-#define SSR_DEBUG 0
-
-// March settings — many small steps with gentle growth; hit tolerance scales
-// with the step so a large stride near the shore doesn't overshoot a surface.
-#define SSR_STEPS 64
-#define SSR_REFINE 6
-#define SSR_STEP0 0.30
-#define SSR_GROW 1.07
-#define SSR_THICKNESS 0.50
-#define WATER_EPS 0.05      // view-space surface/lakebed gap that means "water"
+#define SSAO_SAMPLES 12
+#define SSAO_RADIUS 0.8     // hemisphere radius in blocks
+#define SSAO_BIAS 0.05      // view-space Z tolerance against self-occlusion
+#define SSAO_MAX_DIST 64.0  // AO fully faded out at this view distance
 
 vec3 viewFromDepth(vec2 uv, float depth) {
     vec4 ndc = vec4(uv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
@@ -43,85 +35,81 @@ vec2 projectToUV(vec3 viewPos) {
     return clip.xy / clip.w * 0.5 + 0.5;
 }
 
-// True where a translucent surface (water) sits in front of the opaque scene.
-// Requires opaque geometry behind it (d1 < 1.0) so translucent clouds — which
-// have only sky behind them — are not mistaken for water.
-bool isWaterAt(vec2 uv, float d0) {
-    if (d0 >= 0.9999) return false;
-    float d1 = texture2D(depthtex1, uv).r;
-    if (d1 >= 0.9999) return false;
-    return viewFromDepth(uv, d0).z - viewFromDepth(uv, d1).z > WATER_EPS;
+vec3 viewAt(vec2 uv) {
+    return viewFromDepth(uv, texture2D(depthtex0, uv).r);
+}
+
+// Normal from depth: on each axis take the neighbor whose depth is closer to
+// the center, so silhouette edges don't produce garbage normals.
+vec3 normalFromDepth(vec2 uv, vec3 c) {
+    vec2 px = vec2(1.0 / viewWidth, 1.0 / viewHeight);
+    vec3 r = viewAt(uv + vec2(px.x, 0.0));
+    vec3 l = viewAt(uv - vec2(px.x, 0.0));
+    vec3 u = viewAt(uv + vec2(0.0, px.y));
+    vec3 d = viewAt(uv - vec2(0.0, px.y));
+    vec3 dx = (abs(r.z - c.z) < abs(c.z - l.z)) ? (r - c) : (c - l);
+    vec3 dy = (abs(u.z - c.z) < abs(c.z - d.z)) ? (u - c) : (c - d);
+    vec3 N = normalize(cross(dx, dy));
+    // A visible surface must face the eye.
+    if (dot(N, -c) < 0.0) N = -N;
+    return N;
 }
 
 void main() {
-    vec3 sceneColor = texture2D(colortex0, texcoord).rgb;
     float depth = texture2D(depthtex0, texcoord).r;
-
-    bool water = isEyeInWater == 0 && isWaterAt(texcoord, depth);
-
-#if SSR_DEBUG == 1
-    if (water) { gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0); return; }
-#endif
-
-    if (!water) {
-        if (isEyeInWater == 1) {
-            const vec3 limeTurquoise = vec3(0.30, 0.78, 0.55);
-            sceneColor = mix(sceneColor, limeTurquoise, 0.12) * 0.96;
-        }
-        gl_FragColor = vec4(sceneColor, 1.0);
+    if (depth >= 0.9999) {                    // sky: fully unoccluded
+        gl_FragData[0] = vec4(1.0);
         return;
     }
 
-    // Flat mirror: world up transformed into eye space.
-    vec3 N = normalize(mat3(gbufferModelView) * vec3(0.0, 1.0, 0.0));
-    vec3 viewPos = viewFromDepth(texcoord, depth);  // water surface point
-    vec3 V = normalize(-viewPos);                   // surface -> eye
-    vec3 rayDir = normalize(reflect(-V, N));        // reflected view ray
+    vec3 c = viewFromDepth(texcoord, depth);
+    float dist = -c.z;
+    if (dist > SSAO_MAX_DIST) {
+        gl_FragData[0] = vec4(1.0);
+        return;
+    }
 
-    float cosNV = clamp(dot(N, V), 0.0, 1.0);
-    float fres = 0.02 + 0.98 * pow(1.0 - cosNV, 5.0);
+    vec3 N = normalFromDepth(texcoord, c);
 
-    // --- ray-march in view space, hit refined by bisection ---
-    vec3 p = viewPos, prev = p, hitView = p;
-    float step = SSR_STEP0;
-    bool hit = false;
-    for (int i = 0; i < SSR_STEPS; i++) {
-        prev = p;
-        p += rayDir * step;
-        float lastStep = step;
-        step *= SSR_GROW;
-        if (p.z >= 0.0) break;                       // behind the camera
+    // Tangent frame around N.
+    vec3 ref = (abs(N.z) < 0.99) ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+    vec3 T = normalize(cross(ref, N));
+    vec3 B = cross(N, T);
 
-        vec2 uv = projectToUV(p);
-        if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) break;
+    // Interleaved gradient noise -> per-pixel spiral rotation.
+    float noiseAng = 6.2831853
+        * fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
 
-        float sDepth = texture2D(depthtex0, uv).r;
-        if (sDepth >= 0.9999) continue;              // sky: keep marching
-        if (isWaterAt(uv, sDepth)) continue;         // don't reflect off water
+    float occ = 0.0;
+    for (int i = 0; i < SSAO_SAMPLES; i++) {
+        float fi = float(i) + 0.5;
+        float ang = fi * 2.39996 + noiseAng;             // golden angle
+        float rad = SSAO_RADIUS * sqrt(fi / float(SSAO_SAMPLES));
+        vec3 sp = c + (T * cos(ang) + B * sin(ang)) * rad
+                    + N * (rad * 0.4 + SSAO_BIAS);       // lift into hemisphere
 
-        vec3 sView = viewFromDepth(uv, sDepth);
-        float gap = sView.z - p.z;                   // >0 once behind a surface
-        float thick = max(SSR_THICKNESS, lastStep * 1.6);
-        if (gap > 0.0 && gap < thick) {
-            vec3 a = prev, b = p;
-            for (int j = 0; j < SSR_REFINE; j++) {
-                vec3 m = (a + b) * 0.5;
-                vec2 muv = projectToUV(m);
-                if (viewFromDepth(muv, texture2D(depthtex0, muv).r).z - m.z > 0.0) b = m; else a = m;
-            }
-            hitView = b;
-            hit = true;
-            break;
+        if (sp.z >= 0.0) continue;                       // behind the camera
+        vec2 suv = projectToUV(sp);
+        if (suv.x < 0.0 || suv.x > 1.0 || suv.y < 0.0 || suv.y > 1.0) continue;
+
+        float sd = texture2D(depthtex0, suv).r;
+        if (sd >= 0.9999) continue;                      // sky never occludes
+        float sz = viewFromDepth(suv, sd).z;
+
+        // Occluded when scene geometry sits in front of the sample point;
+        // range check kills halos from unrelated far-apart geometry.
+        if (sz > sp.z + SSAO_BIAS) {
+            float rangeCheck = smoothstep(0.0, 1.0, SSAO_RADIUS / abs(c.z - sz));
+            occ += rangeCheck;
         }
     }
 
-    vec3 outColor = sceneColor;
-    if (hit) {
-        vec2 hitUV = projectToUV(hitView);
-        vec3 reflCol = texture2D(colortex0, hitUV).rgb;
-        vec2 e = smoothstep(0.0, 0.12, hitUV) * smoothstep(0.0, 0.12, 1.0 - hitUV);
-        outColor = mix(sceneColor, reflCol, fres * e.x * e.y);
-    }
+    float ao = 1.0 - occ / float(SSAO_SAMPLES);
+    // Fade AO out with distance so far terrain isn't dirtied.
+    float fade = 1.0 - smoothstep(SSAO_MAX_DIST * 0.6, SSAO_MAX_DIST, dist);
+    ao = mix(1.0, ao, fade);
 
-    gl_FragColor = vec4(outColor, 1.0);
+    gl_FragData[0] = vec4(vec3(ao), 1.0);
 }
+
+/* DRAWBUFFERS:3 */
